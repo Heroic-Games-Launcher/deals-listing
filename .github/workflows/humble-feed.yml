@@ -1,0 +1,46 @@
+# Mirrors Humble Bundle's discounted products (impact.com partner API) to static
+# JSONs on the `humble-feed` branch, consumed by src/backend/discounts/humble.ts.
+# Requires repository secrets: IMPACT_ACCOUNT_SID, IMPACT_AUTH_TOKEN.
+name: Update Humble discounts feed
+
+on:
+  schedule:
+    - cron: '13 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: humble-feed
+
+permissions:
+  contents: write
+
+jobs:
+  update-feed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch and normalize the Humble catalog
+        env:
+          IMPACT_ACCOUNT_SID: ${{ secrets.IMPACT_ACCOUNT_SID }}
+          IMPACT_AUTH_TOKEN: ${{ secrets.IMPACT_AUTH_TOKEN }}
+          IMPACT_CATALOG_ID: ${{ vars.HUMBLE_CATALOG_ID }}
+        run: node .github/scripts/mirror-humble-feed.mjs "$RUNNER_TEMP/humble-feed"
+
+      - name: Publish to the humble-feed branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Single force-pushed commit so the feed history never grows the repo
+        run: |
+          set -euo pipefail
+          publish_dir="$(mktemp -d)"
+          cp "$RUNNER_TEMP"/humble-feed/humble-discounts-*.json "$publish_dir/"
+          cd "$publish_dir"
+          git init --quiet --initial-branch=humble-feed
+          git add 'humble-discounts-*.json'
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit --quiet -m "Update Humble discounts feed"
+          git push --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            humble-feed
