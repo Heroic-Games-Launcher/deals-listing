@@ -27,7 +27,18 @@ jobs:
           IMPACT_CATALOG_ID: ${{ vars.HUMBLE_CATALOG_ID }}
         run: node .github/scripts/mirror-humble-feed.mjs "$RUNNER_TEMP/humble-feed"
 
+      - name: Check for feed updates
+        id: check
+        run: |
+          if compgen -G "$RUNNER_TEMP/humble-feed/humble-discounts-*.json" > /dev/null; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "No feed files generated (upstream feed has no sale prices); skipping publish."
+          fi
+
       - name: Publish to the humble-feed branch
+        if: steps.check.outputs.publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Single force-pushed commit so the feed history never grows the repo
