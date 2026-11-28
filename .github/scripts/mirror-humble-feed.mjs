@@ -59,6 +59,10 @@ const get = async (path) => {
   return res.json()
 }
 
+// UAT catalogs are Impact staging feeds: they may expose base prices only.
+const isUatCatalog = (catalog) =>
+  /\buat\b/i.test(`${catalog.CampaignName ?? ''} ${catalog.Name ?? ''}`)
+
 // Per currency, keep the catalog with the most items (Humble may also publish
 // tiny curated catalogs in the same currencies).
 const findCatalogs = async () => {
@@ -66,6 +70,15 @@ const findCatalogs = async () => {
   const catalogs = (data.Catalogs ?? []).filter((c) =>
     /humble/i.test(`${c.CampaignName ?? ''} ${c.Name ?? ''}`)
   )
+
+  // If a production catalog appears next to a UAT one, never prefer the UAT one.
+  const production = catalogs.filter((c) => !isUatCatalog(c))
+  const candidates = production.length ? production : catalogs
+  if (!production.length && catalogs.length) {
+    console.warn(
+      'Only UAT Humble catalog(s) visible; sale prices may be missing (Impact staging feed).'
+    )
+  }
 
   const fromEnv = process.env.IMPACT_CATALOG_ID
   if (fromEnv) {
@@ -78,7 +91,7 @@ const findCatalogs = async () => {
   }
 
   const byCurrency = new Map()
-  for (const c of catalogs) {
+  for (const c of candidates) {
     const currency = (c.Currency ?? '').toUpperCase()
     if (!currency) continue
     const best = byCurrency.get(currency)
@@ -109,14 +122,29 @@ const fetchAllItems = async (catalogId) => {
     const data = await get(
       `/Mediapartners/${accountSid}/Catalogs/${catalogId}/Items?PageSize=${PAGE_SIZE}&Page=${page}`
     )
-    items.push(...(data.Items ?? []))
+    const pageItems = data.Items ?? []
+
+    // A feed with no OriginalPrice anywhere is an upstream base-price-only feed
+    // (Impact UAT catalog). There is nothing to mirror: skip without failing and
+    // keep the previous good feed untouched.
+    if (page === 1 && !pageItems.some((item) => Number(item.OriginalPrice) > 0)) {
+      console.warn(
+        `Catalog ${catalogId} has no OriginalPrice/sale data (upstream base-price-only feed); skipping.`
+      )
+      console.log(
+        '::warning::Humble Impact catalog currently has no sale prices; keeping the last good mirror.'
+      )
+      return { items: [], hasSalePrices: false }
+    }
+
+    items.push(...pageItems)
     numPages = Math.min(parseInt(data['@numpages'] ?? '1', 10) || 1, MAX_PAGES)
     console.log(
       `Fetched page ${page}/${numPages} (${items.length} items so far)`
     )
     page++
   } while (page <= numPages)
-  return items
+  return { items, hasSalePrices: true }
 }
 
 const catalogs = await findCatalogs()
@@ -125,9 +153,12 @@ console.log(
     catalogs.map((c) => `${c.Currency}=${c.Id}`).join(', ')
 )
 
+let published = 0
+
 for (const catalog of catalogs) {
   const currency = (catalog.Currency ?? '').toUpperCase()
-  const items = await fetchAllItems(catalog.Id)
+  const { items, hasSalePrices } = await fetchAllItems(catalog.Id)
+  if (!hasSalePrices) continue
 
   const discounted = items
     .filter((item) => {
@@ -165,5 +196,12 @@ for (const catalog of catalogs) {
   )
   console.log(
     `Wrote ${discounted.length} discounted items (of ${items.length}) to ${outFile}`
+  )
+  published++
+}
+
+if (published === 0) {
+  console.warn(
+    'No Humble catalog published this run (upstream feed has no sale prices). Keeping the last good mirror.'
   )
 }
