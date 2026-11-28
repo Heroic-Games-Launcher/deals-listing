@@ -131,10 +131,7 @@ const fetchAllItems = async (catalogId) => {
       console.warn(
         `Catalog ${catalogId} has no OriginalPrice/sale data (upstream base-price-only feed); skipping.`
       )
-      console.log(
-        '::warning::Humble Impact catalog currently has no sale prices; keeping the last good mirror.'
-      )
-      return { items: [], hasSalePrices: false }
+      return { items: [], hasSalePrices: false, basePriceOnly: true }
     }
 
     items.push(...pageItems)
@@ -144,7 +141,7 @@ const fetchAllItems = async (catalogId) => {
     )
     page++
   } while (page <= numPages)
-  return { items, hasSalePrices: true }
+  return { items, hasSalePrices: true, basePriceOnly: false }
 }
 
 const catalogs = await findCatalogs()
@@ -157,8 +154,22 @@ let published = 0
 
 for (const catalog of catalogs) {
   const currency = (catalog.Currency ?? '').toUpperCase()
-  const { items, hasSalePrices } = await fetchAllItems(catalog.Id)
-  if (!hasSalePrices) continue
+  const { items, hasSalePrices, basePriceOnly } = await fetchAllItems(catalog.Id)
+  if (!hasSalePrices) {
+    if (basePriceOnly) {
+      // The feed is up but carries base prices only: the previous mirror is stale
+      // (sales ended / Impact is serving the UAT catalog). Publish an empty feed so
+      // the app stops showing discounts that no longer exist.
+      const outFile = join(outDir, `humble-discounts-${currency}.json`)
+      writeFileSync(outFile, JSON.stringify({ '@page': '1', '@numpages': '1', Items: [] }))
+      console.log(
+        '::warning::Humble Impact feed currently has no sale prices; publishing an empty feed to clear stale discounts.'
+      )
+      console.warn(`Wrote empty ${currency} feed to ${outFile} (no sale prices upstream).`)
+      published++
+    }
+    continue
+  }
 
   const discounted = items
     .filter((item) => {
